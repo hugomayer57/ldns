@@ -14,6 +14,7 @@
 #include <openssl/rand.h>
 #include <openssl/err.h>
 #include <openssl/md5.h>
+#include <openssl/provider.h>
 
 ldns_dnssec_data_chain *
 ldns_dnssec_data_chain_new(void)
@@ -1906,24 +1907,34 @@ ldns_verify_rrsig_ed25519_raw(unsigned char* sig, size_t siglen,
 #endif /* USE_ED25519 */
 
 #ifdef USE_ED448
+// EVP_PKEY*
+// ldns_ed4482pkey_raw(const unsigned char* key, size_t keylen)
+// {
+// 	/* ASN1 for ED448 is 3043300506032b6571033a00 <57byteskey> */
+// 	uint8_t pre[] = {0x30, 0x43, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65,
+// 		0x71, 0x03, 0x3a, 0x00};
+//         int pre_len = 12;
+// 	uint8_t buf[256];
+//         EVP_PKEY *evp_key;
+// 	/* pp gets modified by d2i() */
+//         const unsigned char* pp = (unsigned char*)buf;
+// 	if(keylen != 57 || keylen + pre_len > sizeof(buf))
+// 		return NULL; /* wrong length */
+// 	memmove(buf, pre, pre_len);
+// 	memmove(buf+pre_len, key, keylen);
+// 	evp_key = d2i_PUBKEY(NULL, &pp, (int)(pre_len+keylen));
+//         return evp_key;
+// }
+
 EVP_PKEY*
 ldns_ed4482pkey_raw(const unsigned char* key, size_t keylen)
 {
-	/* ASN1 for ED448 is 3043300506032b6571033a00 <57byteskey> */
-	uint8_t pre[] = {0x30, 0x43, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65,
-		0x71, 0x03, 0x3a, 0x00};
-        int pre_len = 12;
-	uint8_t buf[256];
-        EVP_PKEY *evp_key;
-	/* pp gets modified by d2i() */
-        const unsigned char* pp = (unsigned char*)buf;
-	if(keylen != 57 || keylen + pre_len > sizeof(buf))
-		return NULL; /* wrong length */
-	memmove(buf, pre, pre_len);
-	memmove(buf+pre_len, key, keylen);
-	evp_key = d2i_PUBKEY(NULL, &pp, (int)(pre_len+keylen));
-        return evp_key;
+    if (keylen != 57)
+        return NULL;
+
+    return EVP_PKEY_new_raw_public_key(EVP_PKEY_ED448, NULL, key, keylen);
 }
+
 
 static ldns_status
 ldns_verify_rrsig_ed448_raw(unsigned char* sig, size_t siglen,
@@ -2004,6 +2015,78 @@ ldns_verify_rrsig_ecdsa_raw(unsigned char* sig, size_t siglen,
 	return result;
 }
 #endif
+
+/* ADD PQC START */
+EVP_PKEY*
+ldns_pqcpkey_raw(const unsigned char* pub_key, size_t pub_len, uint8_t alg)
+{
+    EVP_PKEY *key = NULL;
+    EVP_PKEY_CTX *ctx = NULL;
+
+    // Load the provider
+    static OSSL_PROVIDER *oqs = NULL;
+    if (!oqs) {
+        oqs = OSSL_PROVIDER_load(NULL, "oqsprovider");
+        if (!oqs) {
+            fprintf(stderr, "Erreur lors du chargement du provider oqs\n");
+            ERR_print_errors_fp(stderr);
+            return NULL;
+        }
+    }
+
+	const char* name = (alg == LDNS_FALCON512) ? "falcon512" : "mayo1";
+
+    // Create the context
+    ctx = EVP_PKEY_CTX_new_from_name(NULL, name, NULL);
+    if (!ctx) {
+        fprintf(stderr, "Erreur de création du contexte mayo1\n");
+        ERR_print_errors_fp(stderr);
+        return NULL;
+    }
+
+    if (EVP_PKEY_fromdata_init(ctx) <= 0) {
+        fprintf(stderr, "Erreur init fromdata PQC\n");
+        ERR_print_errors_fp(stderr);
+        EVP_PKEY_CTX_free(ctx);
+        return NULL;
+    }
+
+    // Build parameters
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_octet_string("pub", (void*)pub_key, pub_len),
+        OSSL_PARAM_construct_end()
+    };
+
+    if (EVP_PKEY_fromdata(ctx, &key, EVP_PKEY_PUBLIC_KEY, params) <= 0) {
+        fprintf(stderr, "Error generation public key PQC\n");
+        ERR_print_errors_fp(stderr);
+        EVP_PKEY_CTX_free(ctx);
+        return NULL;
+    }
+
+    EVP_PKEY_CTX_free(ctx);
+    return key;
+}
+
+
+static ldns_status
+ldns_verify_rrsig_pqc_raw(unsigned char* sig, size_t siglen,
+	ldns_buffer* rrset, unsigned char* key, size_t keylen, uint8_t alg)
+{
+    EVP_PKEY *evp_key;
+    ldns_status result;
+
+    evp_key = ldns_pqcpkey_raw(key, keylen, alg);
+    if(!evp_key) {
+		/* could not convert key */
+		return LDNS_STATUS_CRYPTO_BOGUS;
+    }
+	
+	result = ldns_verify_rrsig_evp_raw(sig, siglen, rrset, evp_key, NULL);
+	EVP_PKEY_free(evp_key);
+	return result;
+}
+/* ADD PQC END */
 
 ldns_status
 ldns_verify_rrsig_buffers(ldns_buffer *rawsig_buf, ldns_buffer *verify_buf, 
@@ -2090,6 +2173,17 @@ ldns_verify_rrsig_buffers_raw(unsigned char* sig, size_t siglen,
 									 key,
 									 keylen);
 		break;
+	/* ADD PQC START */
+	case LDNS_FALCON512:
+	case LDNS_MAYO1:
+		return ldns_verify_rrsig_pqc_raw(sig,
+									 siglen,
+									 verify_buf,
+									 key,
+									 keylen,
+									 algo);
+		break;
+	/* ADD PQC END */
 	default:
 		/* do you know this alg?! */
 		return LDNS_STATUS_CRYPTO_UNKNOWN_ALGO;
@@ -2173,6 +2267,10 @@ ldns_rrsig2rawsig_buffer(ldns_buffer* rawsig_buf, const ldns_rr* rrsig)
 	/* (the DSA API wants DER encoding for instance) */
 
 	switch(sig_algo) {
+	/* ADD PQC START */
+	case LDNS_MAYO1:
+	case LDNS_FALCON512:
+	/* ADD PQC END */
 	case LDNS_RSAMD5:
 	case LDNS_RSASHA1:
 	case LDNS_RSASHA1_NSEC3:
@@ -2197,6 +2295,7 @@ ldns_rrsig2rawsig_buffer(ldns_buffer* rawsig_buf, const ldns_rr* rrsig)
 			return LDNS_STATUS_MEM_ERR;
 		}
 		break;
+
 #ifdef USE_DSA
 	case LDNS_DSA:
 	case LDNS_DSA_NSEC3:
@@ -2293,7 +2392,7 @@ ldns_prepare_for_verify(ldns_buffer* rawsig_buf, ldns_buffer* verify_buf,
 	if (ldns_rdf2rr_type(ldns_rr_rrsig_typecovered(rrsig)) !=
 	    ldns_rr_get_type(ldns_rr_list_rr(rrset_clone, 0)))
 		return LDNS_STATUS_CRYPTO_TYPE_COVERED_ERR;
-	
+
 	/* create a buffer with b64 signature rdata */
 	result = ldns_rrsig2rawsig_buffer(rawsig_buf, rrsig);
 	if(result != LDNS_STATUS_OK)
@@ -2476,9 +2575,9 @@ ldns_verify_rrsig_keylist_notime(const ldns_rr_list *rrset,
 	/* create the buffers which will certainly hold the raw data */
 	rawsig_buf = ldns_buffer_new(LDNS_MAX_PACKETLEN);
 	verify_buf  = ldns_buffer_new(LDNS_MAX_PACKETLEN);
-
 	result = ldns_prepare_for_verify(rawsig_buf, verify_buf, 
 		rrset_clone, rrsig);
+
 	if(result != LDNS_STATUS_OK) {
 		ldns_buffer_free(verify_buf);
 		ldns_buffer_free(rawsig_buf);
@@ -2486,7 +2585,6 @@ ldns_verify_rrsig_keylist_notime(const ldns_rr_list *rrset,
 		ldns_rr_list_free(validkeys);
 		return result;
 	}
-
 	result = LDNS_STATUS_CRYPTO_NO_MATCHING_KEYTAG_DNSKEY;
 	for(i = 0; i < ldns_rr_list_rr_count(keys); i++) {
 		status = ldns_verify_test_sig_key(rawsig_buf, verify_buf, 

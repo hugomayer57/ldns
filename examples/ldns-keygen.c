@@ -15,6 +15,8 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
+#include <openssl/provider.h>
+#include <openssl/core_names.h>
 
 #ifdef HAVE_SSL
 static void
@@ -37,6 +39,87 @@ usage(FILE *fp, char *prog) {
 	fprintf(fp, "    K<name>+<alg>+<id>.ds\tDS in RR format (only for DNSSEC KSK keys)\n");
 	fprintf(fp, "  The base name (K<name>+<alg>+<id> will be printed to stdout\n");
 }
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <openssl/evp.h>
+#include <ldns/ldns.h>
+
+/* PQC ADD START */
+void print_ldns_key(const ldns_key *key) {
+    if (key == NULL) {
+        printf("Key is NULL\n");
+        return;
+    }
+
+    printf("Algorithm: %d\n", key->_alg);
+    printf("Use this key: %s\n", key->_use ? "Yes" : "No");
+
+    if (key->_key.key) {
+        printf("OpenSSL EVP Key: %p\n", key->_key.key);
+    }
+    if (key->_key.hmac.key) {
+        printf("HMAC Key: [size: %zu] [key data: ", key->_key.hmac.size);
+        for (size_t i = 0; i < key->_key.hmac.size; i++) {
+            printf("%02x", key->_key.hmac.key[i]);
+        }
+        printf("]\n");
+    }
+    if (key->_key.external_key) {
+        printf("External Key: %p\n", key->_key.external_key);
+    }
+
+    if (key->_extra.dnssec.orig_ttl) {
+        printf("Original TTL: %u\n", key->_extra.dnssec.orig_ttl);
+    }
+    printf("Inception: %u\n", key->_extra.dnssec.inception);
+    printf("Expiration: %u\n", key->_extra.dnssec.expiration);
+    printf("Keytag: %u\n", key->_extra.dnssec.keytag);
+    printf("Flags: %u\n", key->_extra.dnssec.flags);
+
+    if (key->_pubkey_owner) {
+        char *owner_str = ldns_rdf2str(key->_pubkey_owner);
+        printf("Public Key Owner: %s\n", owner_str);
+        free(owner_str);
+    }
+}
+
+void print_ldns_rr(const ldns_rr *rr) {
+    if (rr == NULL) {
+        printf("Resource Record is NULL\n");
+        return;
+    }
+
+    if (rr->_owner) {
+        char *owner_str = ldns_rdf2str(rr->_owner);
+        printf("Owner Name: %s\n", owner_str);
+        free(owner_str);
+    }
+
+    printf("TTL: %u\n", rr->_ttl);
+
+    printf("Rdata Field Count: %zu\n", rr->_rd_count);
+
+    printf("RR Type: %d\n", rr->_rr_type);
+
+    printf("RR Class: %d\n", rr->_rr_class);
+
+    if (rr->_rdata_fields) {
+        printf("Rdata Fields:\n");
+        for (size_t i = 0; i < rr->_rd_count; i++) {
+            if (rr->_rdata_fields[i]) {
+                char *rdata_str = ldns_rdf2str(rr->_rdata_fields[i]);
+                printf("Rdata Field %zu: %s\n", i + 1, rdata_str);
+                free(rdata_str); 
+            }
+        }
+    }
+
+    printf("Is Question RR: %s\n", rr->_rr_question ? "Yes" : "No");
+}
+
+/* PQC ADD END */
 
 static void
 show_algorithms(FILE *out)
@@ -118,9 +201,12 @@ main(int argc, char *argv[])
 	symlink_create = false;
 	symlink_override = false;
 
+	printf("Ldns-Keygen Start ...\n");
+
 	while ((c = getopt(argc, argv, "a:kb:r:sfv")) != -1) {
 		switch (c) {
 		case 'a':
+			printf("You choose the algo %s\n",optarg);
 			if (algorithm != 0) {
 				fprintf(stderr, "The -a argument can only be used once\n");
 				exit(1);
@@ -277,6 +363,18 @@ main(int argc, char *argv[])
 			exit(1);
 		}
 		break;
+
+	/* PQC ADD START */
+	case LDNS_SIGN_FALCON512:
+	case LDNS_SIGN_MAYO1:
+		if (bits < 512 || bits > 4096) {
+			fprintf(stderr, "For MAYO, the key size must be between ");
+			fprintf(stderr, " 512 and 4096 bits. Aborting.\n");
+			exit(1);
+		}
+		break;
+	/* PQC ADD END */
+
 	default:
 		break;
 	}
@@ -296,7 +394,10 @@ main(int argc, char *argv[])
 	domain = ldns_dname_new_frm_str(argv[0]);
 
 	/* generate a new key */
+	printf("Generate a new key ...\n");
+	/* Modif PQC */
 	key = ldns_key_new_frm_algorithm(algorithm, bits);
+	//print_ldns_key(key);
 	if(!key) {
 		fprintf(stderr, "cannot generate key of algorithm %s\n",
 			ldns_pkt_algorithm2str((ldns_algorithm)algorithm));
@@ -305,19 +406,22 @@ main(int argc, char *argv[])
 
 	/* set the owner name in the key - this is a /separate/ step */
 	ldns_key_set_pubkey_owner(key, domain);
-
 	/* ksk flag */
 	if (ksk) {
 		ldns_key_set_flags(key, ldns_key_flags(key) + 1);
 	}
 
 	/* create the public from the ldns_key */
+	printf("Generate a public key ...\n");
+	/* Modif PQC */
 	pubkey = ldns_key2rr(key);
+	//print_ldns_rr(pubkey);
 	if (!pubkey) {
 		fprintf(stderr, "Could not extract the public key from the key structure...");
 		ldns_key_deep_free(key);
 		exit(EXIT_FAILURE);
 	}
+	
 	owner = ldns_rdf2str(ldns_rr_owner(pubkey));
 
 	/* calculate and set the keytag */
@@ -339,6 +443,10 @@ main(int argc, char *argv[])
 #endif
 	case LDNS_SIGN_RSASHA256:
 	case LDNS_SIGN_RSASHA512:
+	/* ADD PQC START */
+	case LDNS_SIGN_FALCON512:
+	case LDNS_SIGN_MAYO1:
+ 	/* ADD PQC END */
 		ds = ldns_key_rr2ds(pubkey, LDNS_SHA256);
 		break;
 	case LDNS_SIGN_ECC_GOST:
@@ -381,6 +489,7 @@ main(int argc, char *argv[])
 	} else {
 		/* temporarily set question so that TTL is not printed */
 		ldns_rr_set_question(pubkey, true);
+		printf("Write the .key file\n");
 		ldns_rr_print(file, pubkey);
 		ldns_rr_set_question(pubkey, false);
 		fclose(file);
@@ -405,7 +514,8 @@ main(int argc, char *argv[])
 	if (!file) {
 		goto fail;
 	}
-
+	printf("Write the .private file\n");
+	/* PQC MODIF */
 	ldns_key_print(file, key);
 	fclose(file);
 	if (symlink_create) {

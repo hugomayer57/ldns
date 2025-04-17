@@ -390,6 +390,12 @@ ldns_rr_new_frm_str_internal(ldns_rr **newrr, const char *str,
 				ldns_buffer_skip(rd_buf, 1);
 				quoted = true;
 			}
+			if (!quoted && ldns_rr_descriptor_field_type(desc, r_cnt)
+					== LDNS_RDF_TYPE_LONG_STR) {
+
+				status = LDNS_STATUS_SYNTAX_RDATA_ERR;
+				goto error;
+			}
 		}
 
 		/* because number of fields can be variable, we can't rely on
@@ -1675,8 +1681,8 @@ ldns_rr_compare(const ldns_rr *rr1, const ldns_rr *rr2)
 	return result;
 }
 
-/* convert (c)dnskey to a (c)ds with the given algorithm,
- * then compare the result with the given (c)ds */
+/* convert dnskey to a ds with the given algorithm,
+ * then compare the result with the given ds */
 static int
 ldns_rr_compare_ds_dnskey(ldns_rr *ds,
                           ldns_rr *dnskey)
@@ -1686,10 +1692,8 @@ ldns_rr_compare_ds_dnskey(ldns_rr *ds,
 	ldns_hash algo;
 
 	if (!dnskey || !ds ||
-	    (ldns_rr_get_type(ds) != LDNS_RR_TYPE_DS &&
-	     ldns_rr_get_type(ds) != LDNS_RR_TYPE_CDS) ||
-	    (ldns_rr_get_type(dnskey) != LDNS_RR_TYPE_DNSKEY &&
-	     ldns_rr_get_type(dnskey) != LDNS_RR_TYPE_CDNSKEY)) {
+	    ldns_rr_get_type(ds) != LDNS_RR_TYPE_DS ||
+	    ldns_rr_get_type(dnskey) != LDNS_RR_TYPE_DNSKEY) {
 		return false;
 	}
 
@@ -1722,12 +1726,6 @@ ldns_rr_compare_ds(const ldns_rr *orr1, const ldns_rr *orr2)
 		result = ldns_rr_compare_ds_dnskey(rr1, rr2);
 	} else if (ldns_rr_get_type(rr1) == LDNS_RR_TYPE_DNSKEY &&
 	    ldns_rr_get_type(rr2) == LDNS_RR_TYPE_DS) {
-		result = ldns_rr_compare_ds_dnskey(rr2, rr1);
-	} else if (ldns_rr_get_type(rr1) == LDNS_RR_TYPE_CDS &&
-	    ldns_rr_get_type(rr2) == LDNS_RR_TYPE_CDNSKEY) {
-		result = ldns_rr_compare_ds_dnskey(rr1, rr2);
-	} else if (ldns_rr_get_type(rr1) == LDNS_RR_TYPE_CDNSKEY &&
-	    ldns_rr_get_type(rr2) == LDNS_RR_TYPE_CDS) {
 		result = ldns_rr_compare_ds_dnskey(rr2, rr1);
 	} else {
 		result = (ldns_rr_compare(rr1, rr2) == 0);
@@ -1899,7 +1897,7 @@ static const ldns_rdf_type type_nsap_wireformat[] = {
 	LDNS_RDF_TYPE_NSAP
 };
 static const ldns_rdf_type type_nsap_ptr_wireformat[] = {
-	LDNS_RDF_TYPE_UNQUOTED
+	LDNS_RDF_TYPE_STR
 };
 static const ldns_rdf_type type_sig_wireformat[] = {
 	LDNS_RDF_TYPE_TYPE, LDNS_RDF_TYPE_ALG, LDNS_RDF_TYPE_INT8, LDNS_RDF_TYPE_INT32,
@@ -1913,7 +1911,7 @@ static const ldns_rdf_type type_px_wireformat[] = {
 	LDNS_RDF_TYPE_INT16, LDNS_RDF_TYPE_DNAME, LDNS_RDF_TYPE_DNAME
 };
 static const ldns_rdf_type type_gpos_wireformat[] = {
-	LDNS_RDF_TYPE_UNQUOTED, LDNS_RDF_TYPE_UNQUOTED, LDNS_RDF_TYPE_UNQUOTED
+	LDNS_RDF_TYPE_STR, LDNS_RDF_TYPE_STR, LDNS_RDF_TYPE_STR
 };
 static const ldns_rdf_type type_aaaa_wireformat[] = { LDNS_RDF_TYPE_AAAA };
 static const ldns_rdf_type type_loc_wireformat[] = { LDNS_RDF_TYPE_LOC };
@@ -2496,7 +2494,7 @@ static ldns_rr_descriptor rdata_field_descriptors[] = {
 #endif
 #ifdef RRTYPE_RESINFO
 	/* 261 */
-	{LDNS_RR_TYPE_RESINFO, "RESINFO", 1, 0, NULL, LDNS_RDF_TYPE_UNQUOTED, LDNS_RR_NO_COMPRESS, 0 },
+	{LDNS_RR_TYPE_RESINFO, "RESINFO", 1, 0, NULL, LDNS_RDF_TYPE_STR, LDNS_RR_NO_COMPRESS, 0 },
 #else
 {LDNS_RR_TYPE_NULL, "TYPE261", 1, 1, type_0_wireformat, LDNS_RDF_TYPE_NONE, LDNS_RR_NO_COMPRESS, 0 },
 #endif
@@ -2588,14 +2586,6 @@ ldns_rdf_bitmap_known_rr_types_set(ldns_rdf** rdf, int value)
 	for (d=rdata_field_descriptors; d < rdata_field_descriptors_end; d++) {
 		window  = d->_type >> 8;
 		subtype = d->_type & 0xff;
-
-		/* In the code below, windows[window] == 0 means that the
-		 * window is not in use. So subtype == 0 is a problem. The
-		 * easiest solution is to set subtype to 1, that marks the
-		 * window as in use and doesn't have negative effects.
-		 */
-		if (subtype == 0)
-			subtype = 1;
 		if (windows[window] < subtype) {
 			windows[window] = subtype;
 		}

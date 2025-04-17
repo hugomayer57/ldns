@@ -1225,34 +1225,6 @@ ldns_rdf2buffer_str_eui64(ldns_buffer *output, const ldns_rdf *rdf)
 }
 
 ldns_status
-ldns_rdf2buffer_str_unquoted(ldns_buffer *output, const ldns_rdf *rdf)
-{
-	size_t amount, i;
-	uint8_t ch;
-	if(ldns_rdf_size(rdf) < 1) {
-		return LDNS_STATUS_WIRE_RDATA_ERR;
-	}
-	if((int)ldns_rdf_size(rdf) < (int)ldns_rdf_data(rdf)[0] + 1) {
-		return LDNS_STATUS_WIRE_RDATA_ERR;
-	}
-	amount = ldns_rdf_data(rdf)[0];
-	for(i=0; i<amount; i++) {
-		ch = ldns_rdf_data(rdf)[1+i];
-		if (isprint((int)ch) || ch == '\t') {
-			if (ch == '\"' || ch == '\\' || ch == '\'' ||
-				ch == '(' || ch == ')' || isspace((int)ch))
-				ldns_buffer_printf(output, "\\%c", ch);
-			else
-				ldns_buffer_printf(output, "%c", ch);
-		} else {
-			ldns_buffer_printf(output, "\\%03u",
-                                (unsigned)(uint8_t) ch);
-		}
-	}
-	return ldns_buffer_status(output);
-}
-
-ldns_status
 ldns_rdf2buffer_str_tag(ldns_buffer *output, const ldns_rdf *rdf)
 {
 	size_t nchars;
@@ -1753,9 +1725,6 @@ ldns_rdf2buffer_str_fmt(ldns_buffer *buffer,
 			break;
 		case LDNS_RDF_TYPE_EUI64:
 			res = ldns_rdf2buffer_str_eui64(buffer, rdf);
-			break;
-		case LDNS_RDF_TYPE_UNQUOTED:
-			res = ldns_rdf2buffer_str_unquoted(buffer, rdf);
 			break;
 		case LDNS_RDF_TYPE_TAG:
 			res = ldns_rdf2buffer_str_tag(buffer, rdf);
@@ -2928,33 +2897,64 @@ ldns_ed25519_key2buffer_str(ldns_buffer *output, EVP_PKEY *p)
 }
 #endif
 
+// #if defined(HAVE_SSL) && defined(USE_ED448)
+// static ldns_status
+// ldns_ed448_key2buffer_str(ldns_buffer *output, EVP_PKEY *p)
+// {
+// 	unsigned char* pp = NULL;
+// 	int ret;
+// 	ldns_rdf *b64_bignum;
+// 	ldns_status status;
+
+// 	ldns_buffer_printf(output, "PrivateKey: ");
+
+// 	ret = i2d_PrivateKey(p, &pp);
+// 	/* some-ASN + 57byte key */
+// 	if(ret != 16 + 57) {
+// 		OPENSSL_free(pp);
+// 		return LDNS_STATUS_ERR;
+// 	}
+// 	b64_bignum = ldns_rdf_new_frm_data(LDNS_RDF_TYPE_B64,
+// 		(size_t)ret-16, pp+16);
+// 	status = ldns_rdf2buffer_str(output, b64_bignum);
+
+// 	ldns_rdf_deep_free(b64_bignum);
+// 	OPENSSL_free(pp);
+// 	ldns_buffer_printf(output, "\n");
+// 	return status;
+// }
+// #endif
+
 #if defined(HAVE_SSL) && defined(USE_ED448)
 static ldns_status
 ldns_ed448_key2buffer_str(ldns_buffer *output, EVP_PKEY *p)
 {
-	unsigned char* pp = NULL;
-	int ret;
-	ldns_rdf *b64_bignum;
-	ldns_status status;
+    unsigned char priv[57]; // Ed448 private key is 57 bytes
+    size_t priv_len = sizeof(priv);
+    ldns_rdf *b64_priv = NULL;
+    ldns_status status;
 
-	ldns_buffer_printf(output, "PrivateKey: ");
+    if (EVP_PKEY_get_raw_private_key(p, priv, &priv_len) != 1) {
+        return LDNS_STATUS_ERR;
+    }
 
-	ret = i2d_PrivateKey(p, &pp);
-	/* some-ASN + 57byte key */
-	if(ret != 16 + 57) {
-		OPENSSL_free(pp);
-		return LDNS_STATUS_ERR;
-	}
-	b64_bignum = ldns_rdf_new_frm_data(LDNS_RDF_TYPE_B64,
-		(size_t)ret-16, pp+16);
-	status = ldns_rdf2buffer_str(output, b64_bignum);
+    if (priv_len != 57) {
+        return LDNS_STATUS_ERR;
+    }
 
-	ldns_rdf_deep_free(b64_bignum);
-	OPENSSL_free(pp);
-	ldns_buffer_printf(output, "\n");
-	return status;
+    ldns_buffer_printf(output, "PrivateKey: ");
+    b64_priv = ldns_rdf_new_frm_data(LDNS_RDF_TYPE_B64, priv_len, priv);
+    if (!b64_priv) {
+        return LDNS_STATUS_MEM_ERR;
+    }
+
+    status = ldns_rdf2buffer_str(output, b64_priv);
+    ldns_rdf_deep_free(b64_priv);
+    ldns_buffer_printf(output, "\n");
+    return status;
 }
 #endif
+
 
 #if defined(HAVE_SSL)
 /** print one b64 encoded bignum to a line in the keybuffer */
@@ -2987,6 +2987,61 @@ ldns_print_bignum_b64_line(ldns_buffer* output, const char* label, const BIGNUM*
 	return 1;
 }
 #endif
+
+static ldns_status
+ldns_pqc_key2buffer_str(ldns_buffer *output, EVP_PKEY *p, ldns_signing_algorithm alg)
+{
+    unsigned char *priv_key = NULL;
+    size_t priv_key_len;
+    ldns_rdf *b64_bignum;
+    ldns_status status;
+
+    /* Add header to the output buffer */
+    ldns_buffer_printf(output, "PrivateKey: ");
+
+    /* Get the size of the raw PQC private key */
+    if (EVP_PKEY_get_raw_private_key(p, NULL, &priv_key_len) <= 0) {
+        return LDNS_STATUS_ERR;
+    }
+	
+	if (priv_key_len != 24 && alg == LDNS_SIGN_MAYO1) {
+		printf("Size of Private key invalid\n");
+        return LDNS_STATUS_ERR;
+    }
+
+	if (priv_key_len != 1281 && alg == LDNS_SIGN_FALCON512) {
+		printf("Size of Private key invalid\n");
+        return LDNS_STATUS_ERR;
+    }
+
+    /* Allocate memory for the private key */
+    priv_key = OPENSSL_malloc(priv_key_len);
+    if (!priv_key) {
+        return LDNS_STATUS_MEM_ERR;
+    }
+
+    /* Extract the raw private key */
+    if (EVP_PKEY_get_raw_private_key(p, priv_key, &priv_key_len) <= 0) {
+        OPENSSL_free(priv_key);
+        return LDNS_STATUS_ERR;
+    }
+
+    /* Convert the private key to base64 for display */
+    b64_bignum = ldns_rdf_new_frm_data(LDNS_RDF_TYPE_B64, 
+                                       priv_key_len, priv_key);
+    
+    /* Write the base64 representation to the buffer */
+    status = ldns_rdf2buffer_str(output, b64_bignum);
+    
+    /* Clean up resources */
+    ldns_rdf_deep_free(b64_bignum);
+    OPENSSL_free(priv_key);
+    
+    /* Add a newline */
+    ldns_buffer_printf(output, "\n");
+    
+    return status;
+}
 
 ldns_status
 ldns_key2buffer_str(ldns_buffer *output, const ldns_key *k)
@@ -3241,6 +3296,20 @@ ldns_key2buffer_str(ldns_buffer *output, const ldns_key *k)
 		        ldns_buffer_printf(output, "Algorithm: 165 (HMAC_SHA512)\n");
 				status = ldns_hmac_key2buffer_str(output, k);
 				break;
+
+			/* ADD PQC START */
+			case LDNS_SIGN_FALCON512:
+				ldns_buffer_printf(output,"Private-key-format: v1.2\n");
+				ldns_buffer_printf(output,"Algorithm: %u (FALCON512)\n",LDNS_FALCON512);
+				ldns_pqc_key2buffer_str(output, k->_key.key, ldns_key_algorithm(k));
+				break;
+			case LDNS_SIGN_MAYO1:
+				ldns_buffer_printf(output,"Private-key-format: v1.2\n");
+				ldns_buffer_printf(output,"Algorithm: %u (MAYO1)\n",LDNS_MAYO1);
+				ldns_pqc_key2buffer_str(output, k->_key.key, ldns_key_algorithm(k));
+				break;
+			/* ADD PQC END */
+	
 		}
 #endif /* HAVE_SSL */
 	} else {
@@ -3378,6 +3447,7 @@ ldns_key2str(const ldns_key *k)
 	if (!tmp_buffer) {
 		return NULL;
 	}
+	/* PQC MODIF */
 	if (ldns_key2buffer_str(tmp_buffer, k) == LDNS_STATUS_OK) {
 		/* export and return string, destroy rest */
 		result = ldns_buffer_export2str(tmp_buffer);

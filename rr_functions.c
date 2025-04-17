@@ -280,6 +280,13 @@ ldns_rr_dnskey_key_size_raw(const unsigned char* keydata,
 	
 	switch ((ldns_signing_algorithm)alg) {
 #ifdef USE_DSA
+	/* ADD PQC START */
+	case LDNS_SIGN_MAYO1:
+		return 1420;
+	case LDNS_FALCON512:
+		return 897;
+	/* ADD PQC END */
+
 	case LDNS_SIGN_DSA:
 	case LDNS_SIGN_DSA_NSEC3:
 		if (len > 0) {

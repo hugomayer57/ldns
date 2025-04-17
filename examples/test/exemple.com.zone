@@ -1,0 +1,20 @@
+$ORIGIN exemple.com.
+$TTL 3600
+
+@ IN SOA ns1.exemple.com. admin.exemple.com. (
+    2023042701 ; Serial
+    3600       ; Refresh
+    1800       ; Retry
+    604800     ; Expire
+    86400      ; Minimum TTL
+)
+
+; Serveurs DNS
+@    IN NS    ns1.exemple.com.
+@    IN NS    ns2.exemple.com.
+
+; A records
+@    IN A     192.168.1.10
+www  IN A     192.168.1.10
+ns1  IN A     192.168.1.11
+ns2  IN A     192.168.1.12

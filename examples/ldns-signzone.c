@@ -111,6 +111,131 @@ usage(FILE *fp, const char *prog) {
 #endif
 }
 
+typedef enum {
+    KEY_NONE,
+    KEY_PUBLIC_ONLY,
+    KEY_PRIVATE_ONLY,
+    KEY_KEYPAIR
+} key_type;
+
+typedef struct {
+    key_type type;
+    size_t public_len;
+    size_t private_len;
+} key_info;
+
+/* ADD PQC START
+const char* key_type_to_str(key_type type) {
+    switch(type) {
+        case KEY_KEYPAIR: return "Key pair (private + public)";
+        case KEY_PUBLIC_ONLY: return "Public key only";
+        case KEY_PRIVATE_ONLY: return "Private key only";
+        case KEY_NONE: default: return "Invalid or unknown key";
+    }
+}
+
+key_info get_key_info(EVP_PKEY* pkey) {
+    key_info info = { .type = KEY_NONE, .public_len = 0, .private_len = 0 };
+
+    if (!pkey)
+        return info;
+
+    size_t len = 0;
+
+    // Check raw public key
+    if (EVP_PKEY_get_raw_public_key(pkey, NULL, &len) == 1 && len > 0) {
+        info.public_len = len;
+    }
+
+    // Check raw private key
+    if (EVP_PKEY_get_raw_private_key(pkey, NULL, &len) == 1 && len > 0) {
+        info.private_len = len;
+    }
+
+    // Determine type
+    if (info.public_len > 0 && info.private_len > 0)
+        info.type = KEY_KEYPAIR;
+    else if (info.private_len > 0)
+        info.type = KEY_PRIVATE_ONLY;
+    else if (info.public_len > 0)
+        info.type = KEY_PUBLIC_ONLY;
+
+    return info;
+}
+ADD PQC END */
+
+void print_ldns_key(const ldns_key *key) {
+    if (key == NULL) {
+        printf("Key is NULL\n");
+        return;
+    }
+
+    printf("Algorithm: %d\n", key->_alg);
+    printf("Use this key: %s\n", key->_use ? "Yes" : "No");
+
+    if (key->_key.key) {
+        printf("OpenSSL EVP Key: %p\n", key->_key.key);
+    }
+    if (key->_key.hmac.key) {
+        printf("HMAC Key: [size: %zu] [key data: ", key->_key.hmac.size);
+        for (size_t i = 0; i < key->_key.hmac.size; i++) {
+            printf("%02x", key->_key.hmac.key[i]);
+        }
+        printf("]\n");
+    }
+    if (key->_key.external_key) {
+        printf("External Key: %p\n", key->_key.external_key);
+    }
+
+    if (key->_extra.dnssec.orig_ttl) {
+        printf("Original TTL: %u\n", key->_extra.dnssec.orig_ttl);
+    }
+    printf("Inception: %u\n", key->_extra.dnssec.inception);
+    printf("Expiration: %u\n", key->_extra.dnssec.expiration);
+    printf("Keytag: %u\n", key->_extra.dnssec.keytag);
+    printf("Flags: %u\n", key->_extra.dnssec.flags);
+
+    if (key->_pubkey_owner) {
+        char *owner_str = ldns_rdf2str(key->_pubkey_owner);
+        printf("Public Key Owner: %s\n", owner_str);
+        free(owner_str);
+    }
+}
+
+void print_ldns_rr(const ldns_rr *rr) {
+    if (rr == NULL) {
+        printf("Resource Record is NULL\n");
+        return;
+    }
+
+    if (rr->_owner) {
+        char *owner_str = ldns_rdf2str(rr->_owner);
+        printf("Owner Name: %s\n", owner_str);
+        free(owner_str);
+    }
+
+    printf("TTL: %u\n", rr->_ttl);
+
+    printf("Rdata Field Count: %zu\n", rr->_rd_count);
+
+    printf("RR Type: %d\n", rr->_rr_type);
+
+    printf("RR Class: %d\n", rr->_rr_class);
+
+    if (rr->_rdata_fields) {
+        printf("Rdata Fields:\n");
+        for (size_t i = 0; i < rr->_rd_count; i++) {
+            if (rr->_rdata_fields[i]) {
+                char *rdata_str = ldns_rdf2str(rr->_rdata_fields[i]);
+                printf("Rdata Field %zu: %s\n", i + 1, rdata_str);
+                free(rdata_str); 
+            }
+        }
+    }
+
+    printf("Is Question RR: %s\n", rr->_rr_question ? "Yes" : "No");
+}
+
 static void check_tm(struct tm tm)
 {
 	if (tm.tm_year < 70) {
@@ -252,6 +377,8 @@ find_key_in_file(const char *keyfile_name_base, ldns_key* ATTR_UNUSED(key),
 	return pubkey;
 }
 
+
+
 /* this function tries to find the specified keys either in the zone that
  * has been read, or in a <basename>.key file. If the key is not found,
  * a public key is generated, and it is assumed the key is a ZSK
@@ -265,7 +392,7 @@ static void
 find_or_create_pubkey(const char *keyfile_name_base, ldns_key *key, ldns_zone *orig_zone, bool add_keys, uint32_t default_ttl) {
 	ldns_rr *pubkey_gen, *pubkey;
 	int key_in_zone;
-	
+
 	if (default_ttl == LDNS_DEFAULT_TTL) {
 		default_ttl = ldns_rr_ttl(ldns_zone_soa(orig_zone));
 	}
@@ -287,6 +414,7 @@ find_or_create_pubkey(const char *keyfile_name_base, ldns_key *key, ldns_zone *o
 	 * we still need to do this, because we need
 	 * to have any key flags that are set this way
 	 */
+	
 	pubkey_gen = ldns_key2rr(key);
 	ldns_rr_set_ttl(pubkey_gen, default_ttl);
 
@@ -300,6 +428,7 @@ find_or_create_pubkey(const char *keyfile_name_base, ldns_key *key, ldns_zone *o
 
 	pubkey = find_key_in_zone(pubkey_gen, orig_zone);
 	key_in_zone = 1;
+
 	if (!pubkey) {
 		key_in_zone = 0;
 		/* it was not in the zone, try to read a .key file */
@@ -320,6 +449,7 @@ find_or_create_pubkey(const char *keyfile_name_base, ldns_key *key, ldns_zone *o
 		}
 	}
 	
+
 	if (!pubkey) {
 		/* okay, no public key found,
 		   just use our generated one */
@@ -938,7 +1068,8 @@ main(int argc, char *argv[])
 				   keyfile_name,
 				   strerror(errno));
 		} else {
-			s = ldns_key_new_frm_fp_l(&key, keyfile, &line_nr);
+			/* PQC MODIF */
+			s = ldns_key_new_frm_fp_l(&key, keyfile, &line_nr, keyfile_name_base);
 			fclose(keyfile);
 			if (s == LDNS_STATUS_OK) {
 				/* set times in key? they will end up
@@ -954,6 +1085,16 @@ main(int argc, char *argv[])
 				LDNS_FREE(keyfile_name);
 				
 				ldns_key_list_push_key(keys, key);
+
+				/* VERIF PQC
+				key_info info = get_key_info(key->_key.key);
+
+				printf("Key type: %s\n", key_type_to_str(info.type));
+				printf("Public key size : %zu bytes\n", info.public_len);
+				printf("Private key size: %zu bytes\n", info.private_len);
+
+				*/
+
 			} else {
 				fprintf(stderr, "Error reading key from %s at line %d: %s\n", argv[argi], line_nr, ldns_get_errorstr_by_id(s));
 			}
@@ -1012,7 +1153,7 @@ main(int argc, char *argv[])
 		fprintf(stderr,
 		  "Error adding SOA to dnssec zone, skipping record\n");
 	}
-	
+
 	for (i = 0;
 	     i < ldns_rr_list_rr_count(ldns_zone_rrs(orig_zone));
 	     i++) {
@@ -1030,6 +1171,7 @@ main(int argc, char *argv[])
 	/* list to store newly created rrs, so we can free them later */
 	added_rrs = ldns_rr_list_new();
 
+	printf("Genrate the signature ...\n");
 	if (use_nsec3) {
 		if (verbosity < 1)
 			; /* pass */
@@ -1061,6 +1203,7 @@ main(int argc, char *argv[])
 			signflags,
 			&fmt_st.hashmap);
 	} else {
+		/* PQC MODIF */
 		result = ldns_dnssec_zone_sign_flg(signed_zone,
 				added_rrs,
 				keys,
@@ -1068,6 +1211,9 @@ main(int argc, char *argv[])
 				NULL,
 				signflags);
 	}
+
+
+
 	if (result != LDNS_STATUS_OK) {
 		fprintf(stderr, "Error signing zone: %s\n",
 			   ldns_get_errorstr_by_id(result));
@@ -1077,6 +1223,7 @@ main(int argc, char *argv[])
 		outputfile_name = LDNS_XMALLOC(char, MAX_FILENAME_LEN);
 		snprintf(outputfile_name, MAX_FILENAME_LEN, "%s.signed", zonefile_name);
 	}
+
 
 	if (signed_zone) {
 		if (strncmp(outputfile_name, "-", 2) == 0) {

@@ -59,7 +59,11 @@ enum ldns_enum_algorithm
 	LDNS_ED448		= 16,  /* RFC 8080 */
         LDNS_INDIRECT           = 252,
         LDNS_PRIVATEDNS         = 253,
-        LDNS_PRIVATEOID         = 254
+        LDNS_PRIVATEOID         = 254,
+
+		/* Test PQC : UOV and Falcon*/
+	LDNS_MAYO1				= 242,
+	LDNS_FALCON512				= 241
 };
 typedef enum ldns_enum_algorithm ldns_algorithm;
 
@@ -105,7 +109,10 @@ enum ldns_enum_signing_algorithm
 	LDNS_SIGN_HMACSHA256 = 159,  /* ditto */
 	LDNS_SIGN_HMACSHA224 = 162,  /* ditto */
 	LDNS_SIGN_HMACSHA384 = 164,  /* ditto */
-	LDNS_SIGN_HMACSHA512 = 165  /* ditto */
+	LDNS_SIGN_HMACSHA512 = 165,  /* ditto */
+
+	LDNS_SIGN_MAYO1		 = LDNS_MAYO1,
+	LDNS_SIGN_FALCON512	 = LDNS_FALCON512
 };
 typedef enum ldns_enum_signing_algorithm ldns_signing_algorithm;
 
@@ -221,7 +228,7 @@ ldns_status ldns_key_new_frm_fp(ldns_key **k, FILE *fp);
  * \param[in] line_nr pointer to an integer containing the current line number (for debugging purposes)
  * \return an error or LDNS_STATUS_OK
  */
-ldns_status ldns_key_new_frm_fp_l(ldns_key **k, FILE *fp, int *line_nr);
+ldns_status ldns_key_new_frm_fp_l(ldns_key **k, FILE *fp, int *line_nr, char* filename);
 
 #if LDNS_BUILD_CONFIG_HAVE_SSL
 /**

@@ -26,7 +26,6 @@ static int32_t inception_offset = 0;
 static int32_t expiration_offset = 0;
 static bool do_sigchase = false;
 static bool no_nomatch_msg = false;
-static int check_all_sigs = 0;
 
 static FILE* myout;
 static FILE* myerr;
@@ -172,32 +171,23 @@ verify_rrs(ldns_rr_list* rrset_rrs, ldns_dnssec_rrs* cur_sig,
 		ldns_rr_list* keys)
 {
 	ldns_status status, result = LDNS_STATUS_OK;
-	int one_signature_verified = 0;
 	ldns_dnssec_rrs *cur_sig_bak = cur_sig;
-	int is_dnskey_rrset = ldns_rr_list_rr_count(rrset_rrs) > 0 &&
-	    ldns_rr_get_type(ldns_rr_list_rr(rrset_rrs, 0)) == LDNS_RR_TYPE_DNSKEY;
 
 	/* A single valid signature validates the RRset */
-	/* With check all sigs, it skips this, except for the DNSKEY RRset. */
-	if(!check_all_sigs || is_dnskey_rrset) {
-	    while (cur_sig) {
+	while (cur_sig) {
 		if (ldns_verify_rrsig_keylist_time( rrset_rrs, cur_sig->rr
 		                                  , keys, check_time, NULL)
 		||  rrsig_check_time_margins(cur_sig->rr))
 			cur_sig = cur_sig->next;
 		else
 			return LDNS_STATUS_OK;
-	    }
 	}
 	/* Without any valid signature, do print all errors.  */
-	/* When checking all sigs, keep track if one is valid. */
 	for (cur_sig = cur_sig_bak; cur_sig; cur_sig = cur_sig->next) {
 		status = ldns_verify_rrsig_keylist_time(rrset_rrs,
 		    cur_sig->rr, keys, check_time, NULL);
 		status = status ? status 
 		       : rrsig_check_time_margins(cur_sig->rr);
-		if(check_all_sigs && status == LDNS_STATUS_OK)
-			one_signature_verified += 1;
 		if (!status)
 			; /* pass */
 		else if (!no_nomatch_msg || status !=
@@ -205,9 +195,7 @@ verify_rrs(ldns_rr_list* rrset_rrs, ldns_dnssec_rrs* cur_sig,
 			print_rrs_status_error(
 			    myerr, rrset_rrs, status, cur_sig);
 		update_error(&result, status);
-	}
-	if(check_all_sigs && one_signature_verified)
-		return LDNS_STATUS_OK;
+	};
 	return result;
 }
 
@@ -230,7 +218,6 @@ verify_dnssec_rrset(ldns_rdf *zone_name, ldns_rdf *name,
 	cur_sig = rrset->signatures;
 	if (cur_sig) {
 		status = verify_rrs(rrset_rrs, cur_sig, keys);
-
 	} else /* delegations may be unsigned (on opt out...) */
 	       if (rrset->type != LDNS_RR_TYPE_NS || 
 			       ldns_dname_compare(name, zone_name) == 0) {
@@ -241,7 +228,6 @@ verify_dnssec_rrset(ldns_rdf *zone_name, ldns_rdf *name,
 		status = LDNS_STATUS_OK;
 	}
 	ldns_rr_list_free(rrset_rrs);
-
 	return status;
 }
 
@@ -423,7 +409,7 @@ static ldns_status
 verify_dnssec_name(ldns_rdf *zone_name, ldns_dnssec_zone* zone,
 		ldns_rbnode_t *cur_node, ldns_rr_list *keys,
 		bool detached_zonemd)
-{
+{				
 	ldns_status result = LDNS_STATUS_OK;
 	ldns_status status;
 	ldns_dnssec_rrsets *cur_rrset;
@@ -468,7 +454,6 @@ verify_dnssec_name(ldns_rdf *zone_name, ldns_dnssec_zone* zone,
 		}
 	} else {
 		/* not glue, do real verify */
-
 		on_delegation_point =
 			    ldns_dnssec_rrsets_contains_type(name->rrsets,
 					LDNS_RR_TYPE_NS)
@@ -476,7 +461,6 @@ verify_dnssec_name(ldns_rdf *zone_name, ldns_dnssec_zone* zone,
 					LDNS_RR_TYPE_SOA);
 		cur_rrset = name->rrsets;
 		while(cur_rrset) {
-
 			/* Do not check occluded rrsets
 			 * on the delegation point
 			 */
@@ -489,7 +473,6 @@ verify_dnssec_name(ldns_rdf *zone_name, ldns_dnssec_zone* zone,
 
 			     (   cur_rrset->type != LDNS_RR_TYPE_ZONEMD
 			     || !detached_zonemd || cur_rrset->signatures))) {
-
 				status = verify_dnssec_rrset(zone_name,
 						name->name, cur_rrset, keys);
 				update_error(&result, status);
@@ -684,6 +667,7 @@ verify_dnssec_zone(ldns_dnssec_zone *dnssec_zone, ldns_rdf *zone_name,
 			/* should we check this one? saves calls to random. */
 			if (percentage == 100 
 			    || ((random() % 100) >= 100 - percentage)) {
+				/* MODIF PQC */
 				status = verify_dnssec_name(zone_name,
 						dnssec_zone, cur_node, keys,
 						detached_zonemd);
@@ -724,7 +708,6 @@ static void print_usage(FILE *out, const char *progname)
 	       "\t\t\tDefault is %s\n", LDNS_TRUST_ANCHOR_FILE);
 	fprintf(out, "\t-p [0-100]\tonly checks this percentage of "
 	       "the zone.\n\t\t\tDefaults to 100\n");
-	fprintf(out, "\t-s\t\tcheck all signature results, instead of one.\n");
 	fprintf(out, "\t-S\t\tchase signature(s) to a known key. "
 	       "The network may be\n\t\t\taccessed to "
 	       "validate the zone's DNSKEYs. (implies -k)\n");
@@ -772,7 +755,7 @@ main(int argc, char **argv)
 	myout = stdout;
 	myerr = stderr;
 
-	while ((c = getopt(argc, argv, "ae:hi:k:vV:p:sSt:Z")) != -1) {
+	while ((c = getopt(argc, argv, "ae:hi:k:vV:p:St:Z")) != -1) {
 		switch(c) {
                 case 'a':
                         apexonly = true;
@@ -841,9 +824,6 @@ main(int argc, char **argv)
                         }
                         srandom(time(NULL) ^ getpid());
                         break;
-		case 's':
-			check_all_sigs = 1;
-			break;
 		case 'S':
 			do_sigchase = true;
 			/* may chase */
@@ -946,9 +926,11 @@ main(int argc, char **argv)
 			       	dnssec_zone->soa->name, LDNS_RR_TYPE_DNSKEY))
 		result = LDNS_STATUS_OK;
 	else
+		/* HERE MODIF PQC */
 		result = verify_dnssec_zone(dnssec_zone,
 				dnssec_zone->soa->name, keys, apexonly,
 				percentage, zonemd_required > 2);
+		/* HERE MODIF PQC */
 
 	if (zonemd_rrset) {
 		ldns_status zonemd_result
@@ -967,7 +949,7 @@ main(int argc, char **argv)
 
 	} else if (zonemd_required)
 		result = LDNS_STATUS_NO_ZONEMD;
-
+	
 	if (result == LDNS_STATUS_OK) {
 		if (verbosity >= 3) {
 			fprintf(myout, "Zone is verified and complete\n");

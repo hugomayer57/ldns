@@ -209,6 +209,15 @@ ldns_sign_public_buffer(ldns_buffer *sign_buf, ldns_key *current_key)
 				   ldns_key_evp_key(current_key),
 				   EVP_md5());
 		break;
+	/* ADD PQC START */
+	case LDNS_SIGN_FALCON512:
+	case LDNS_SIGN_MAYO1:
+		b64rdf = ldns_sign_public_evp(
+			sign_buf,
+			ldns_key_evp_key(current_key),
+			NULL);	
+			break; 
+	/* ADD PQC END */
 	default:
 		/* do _you_ know this alg? */
 		printf("unknown algorithm, ");
@@ -285,7 +294,6 @@ ldns_sign_public(ldns_rr_list *rrset, ldns_key_list *keys)
 			/* right now, we have: a key, a semi-sig and an rrset. For
 			 * which we can create the sig and base64 encode that and
 			 * add that to the signature */
-
 			if (ldns_rrsig2buffer_wire(sign_buf, current_sig)
 			    != LDNS_STATUS_OK) {
 				ldns_buffer_free(sign_buf);
@@ -324,7 +332,6 @@ ldns_sign_public(ldns_rr_list *rrset, ldns_key_list *keys)
 		ldns_buffer_free(sign_buf); /* restart for the next key */
 	}
 	ldns_rr_list_deep_free(rrset_clone);
-
 	return signatures;
 }
 
@@ -452,6 +459,10 @@ ldns_sign_public_evp(ldns_buffer *to_sign,
 	const EVP_MD *md_type;
 	int r;
 
+	/* ADD PQC START */
+	const char *algo_name = EVP_PKEY_get0_type_name(key);
+	/* ADD PQC END */
+
 	siglen = 0;
 	b64sig = ldns_buffer_new(LDNS_MAX_PACKETLEN);
 	if (!b64sig) {
@@ -465,14 +476,21 @@ ldns_sign_public_evp(ldns_buffer *to_sign,
 		/* digest must be NULL for ED25519 sign and verify */
 		md_type = NULL;
 	} else
-#endif
+#endif 
 #ifdef USE_ED448
 	if(EVP_PKEY_id(key) == NID_ED448) {
 		md_type = NULL;
 	} else
 #endif
+	/* ADD PQC START */
+	if (strcmp(algo_name, "mayo1") == 0 || strcmp(algo_name, "falcon512") == 0)
+	{
+		md_type = NULL;
+	} /* ADD PQC END */
+	else
 	if(!md_type) {
 		/* unknown message digest */
+		printf("I M FREE\n");
 		ldns_buffer_free(b64sig);
 		return NULL;
 	}
@@ -1286,7 +1304,6 @@ ldns_dnssec_zone_create_rrsigs_flg( ldns_dnssec_zone *zone
 					ldns_rr_list_push_rr(rr_list, cur_rr->rr);
 					cur_rr = cur_rr->next;
 				}
-
 				/* only sign non-delegation RRsets */
 				/* (glue should have been marked earlier, 
 				 *  except on the delegation points itself) */
@@ -1297,7 +1314,9 @@ ldns_dnssec_zone_create_rrsigs_flg( ldns_dnssec_zone *zone
 							== LDNS_RR_TYPE_NSEC ||
 						ldns_rr_list_type(rr_list) 
 							== LDNS_RR_TYPE_NSEC3) {
+
 					siglist = ldns_sign_public(rr_list, key_list);
+
 					for (i = 0; i < ldns_rr_list_rr_count(siglist); i++) {
 						if (cur_rrset->signatures) {
 							result = ldns_dnssec_rrs_add_rr(cur_rrset->signatures,
@@ -1321,7 +1340,6 @@ ldns_dnssec_zone_create_rrsigs_flg( ldns_dnssec_zone *zone
 
 				cur_rrset = cur_rrset->next;
 			}
-
 			/* sign the nsec */
 			ldns_key_list_set_use(key_list, true);
 			cur_name->nsec_signatures =
@@ -1427,7 +1445,6 @@ ldns_dnssec_zone_sign_flg(ldns_dnssec_zone *zone,
 					func,
 					arg,
 					flags);
-
 	if (zonemd_added) {
 		ldns_dnssec_rrsets **rrsets_ref
 		    = &zone->soa->rrsets;
